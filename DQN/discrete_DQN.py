@@ -10,19 +10,21 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
-# Creating 
+# Creating gym environment to train model in (render_mode = human for visualization)
 env = gym.make("CarRacing-v2", continuous=False, render_mode="human")
-
 plt.ion()
 
+# Training on NVIDIA GPU through cuda if available
 device = torch.device(
     "cuda" if torch.cuda.is_available() else
     "mps" if torch.backends.mps.is_available() else
     "cpu"
 )
 
+
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
 
+# Storing state transitions to break up temporal correlations which improves training
 class ReplayMemory(object):
     def __init__(self, capacity):
         self.memory = deque([], maxlen=capacity)
@@ -36,6 +38,7 @@ class ReplayMemory(object):
     def __len__(self):
         return len(self.memory)
 
+# Declaring DQN architecture
 class DQN(nn.Module):
     def __init__(self, input_shape, n_actions):
         super(DQN, self).__init__()
@@ -52,6 +55,7 @@ class DQN(nn.Module):
         x = F.relu(self.layer2(x))
         return self.layer3(x)
 
+# Constants
 BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = 0.9
@@ -60,19 +64,31 @@ EPS_DECAY = 1000
 TAU = 0.005
 LR = 1e-4
 
+# Get the observation and action space shapes
 n_actions = env.action_space.n
-# Get the observation space shape
 input_shape = env.observation_space.shape
 
+# Creating policy_net and target_net
+# policy_net is the network that actually chooses the actions the agent takes and is trained
+# target_net is updated less frequently (based on tau) and is used to stabilize policy_net learning
 policy_net = DQN(input_shape, n_actions).to(device)
 target_net = DQN(input_shape, n_actions).to(device)
 target_net.load_state_dict(policy_net.state_dict())
 
+# Optimizing using the Adam optimizer (specifically weight decay to reduce overfitting)
 optimizer = optim.AdamW(policy_net.parameters(), lr=LR, amsgrad=True)
+
+# Storing 10,000 instances in the memory
 memory = ReplayMemory(10000)
 
 steps_done = 0
 
+# Selects the action the agent should take based on epsilon-greedy strategy. Typically, you want the agent to either
+# explore new actions to discover new rewards or optimize the best known reward choice. It chooses the exploration
+# option with probability epsilon (set in constants above) and chooses the highest-reward action as predicted by the
+# model with probability 1-epsilon.
+# EPS_START, EPS_END and EPS_DECAY are all chosen to gradually decrease the rate of exploration the more trained the
+# model has become, incentivizing exploration at the beginning of training and optimization of known actions at the end.
 def select_action(state):
     global steps_done
     sample = random.random()
@@ -87,6 +103,7 @@ def select_action(state):
 
 episode_durations = []
 
+# Function to plot algorithm's performance over epochs
 def plot_durations(show_result=False):
     plt.figure(1)
     durations_t = torch.tensor(episode_durations, dtype=torch.float)
@@ -105,12 +122,15 @@ def plot_durations(show_result=False):
 
     plt.pause(0.001)
 
+# Model optimization function. Calculates loss based on predicted Q-values and the target Q-values and updates
+# policy_net accordingly.
 def optimize_model():
     if len(memory) < BATCH_SIZE:
         return
     transitions = memory.sample(BATCH_SIZE)
     batch = Transition(*zip(*transitions))
 
+    #Preparing data for the model
     non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
                                             batch.next_state)), device=device, dtype=torch.bool)
     non_final_next_states = torch.cat([s for s in batch.next_state
@@ -119,22 +139,26 @@ def optimize_model():
     action_batch = torch.cat(batch.action)
     reward_batch = torch.cat(batch.reward)
 
+    # Predicting the Q-values for all actions given state_batch
     state_action_values = policy_net(state_batch).gather(1, action_batch)
 
+    # Storing target Q-values for next states
     next_state_values = torch.zeros(BATCH_SIZE, device=device)
     with torch.no_grad():
         next_state_values[non_final_mask] = target_net(non_final_next_states).max(1).values
 
+    # Calculating expected Q-values
     expected_state_action_values = (next_state_values * GAMMA) + reward_batch
 
+    # Calculating loss and updating the network using backpropagation
     criterion = nn.SmoothL1Loss()
     loss = criterion(state_action_values, expected_state_action_values.unsqueeze(1))
-
     optimizer.zero_grad()
     loss.backward()
     torch.nn.utils.clip_grad_value_(policy_net.parameters(), 100)
     optimizer.step()
 
+# Setting number of epochs
 if torch.cuda.is_available() or torch.backends.mps.is_available():
     num_episodes = 600
 else:
@@ -143,23 +167,26 @@ else:
 for i_episode in range(num_episodes):
     state, info = env.reset()
     state = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+
+    # Selecting action and calculating reward from that action
     for t in count():
         action = select_action(state)
         observation, reward, terminated, truncated, _ = env.step(action.item())
         reward = torch.tensor([reward], device=device)
         done = terminated or truncated
 
+        # Taking new state observation and storing it
         if terminated:
             next_state = None
         else:
             next_state = torch.tensor(observation, dtype=torch.float32, device=device).unsqueeze(0)
-
         memory.push(state, action, next_state, reward)
 
         state = next_state
 
         optimize_model()
 
+        # Slowly updating weights in the target_net based on tau (set in constants above)
         target_net_state_dict = target_net.state_dict()
         policy_net_state_dict = policy_net.state_dict()
         for key in policy_net_state_dict:
@@ -172,6 +199,8 @@ for i_episode in range(num_episodes):
             break
 
 print('Complete')
+
+# Save model to folder
 torch.save(policy_net.state_dict(), 'models/carracing_DQN.pth')
 plot_durations(show_result=True)
 plt.ioff()
