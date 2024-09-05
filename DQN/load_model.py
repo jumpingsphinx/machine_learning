@@ -1,6 +1,6 @@
 import torch
 import gymnasium as gym
-from discrete_DQN import DQN
+from CarRacing import DQN
 
 # Load the environment and get model parameters
 env = gym.make("CarRacing-v2", continuous=False, render_mode="human")

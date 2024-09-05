@@ -201,7 +201,7 @@ for i_episode in range(num_episodes):
 print('Complete')
 
 # Save model to folder
-torch.save(policy_net.state_dict(), 'models/carracing_DQN.pth')
+torch.save(policy_net.state_dict(), 'models/carracing.pth')
 plot_durations(show_result=True)
 plt.ioff()
 plt.show()
